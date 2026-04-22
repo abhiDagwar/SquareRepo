@@ -1,4 +1,4 @@
-# SquareRepos
+# SquareRepo
 
 A UIKit iOS app that fetches and displays a scrollable list of public GitHub repositories for the [Square](https://github.com/square) organisation.
 
@@ -7,7 +7,7 @@ A UIKit iOS app that fetches and displays a scrollable list of public GitHub rep
 ## Project Structure
 
 ```
-SquareRepos/
+SquareRepo/
 ├── Common/
 │   ├── Helper/
 │   │   └── ImageCache.swift          — Actor-isolated, NSCache-backed async image                                     cache
@@ -148,7 +148,7 @@ All tests live in `RepositoryListViewModelTests.swift` and run entirely in-proce
 
 ## Running the project
 
-1. Clone and open `SquareRepos.xcodeproj` in Xcode 15+.
+1. Clone and open `SquareRepo.xcodeproj` in Xcode 15+.
 2. Select any iPhone simulator running iOS 15+.
 3. Press `⌘R` to run, or `⌘U` to run the full unit test suite.
 
