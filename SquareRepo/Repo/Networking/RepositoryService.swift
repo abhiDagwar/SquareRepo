@@ -48,7 +48,7 @@ class GitHubRepositoryService: RepositoryServiceProtocol {
         }
         
         // Create a url request
-        var request = URLRequest(url: url)
+        let request = URLRequest(url: url)
         
         // MARK: Fetch
         let (data, response): (Data, URLResponse)
