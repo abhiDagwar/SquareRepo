@@ -99,6 +99,17 @@ class StateView: UIView {
             messageLabel.text = "This organisation has no public repositories."
             messageLabel.isHidden = false
             retryButton.isHidden = true
+            
+        case .noResults:
+            activityIndicator.stopAnimating()
+            imageView.image = UIImage(systemName: "magnifyingglass")
+            imageView.tintColor = .tertiaryLabel
+            imageView.isHidden = false
+            titleLabel.text = "No Results"
+            titleLabel.isHidden = false
+            messageLabel.text = "Try a different search term or clear your filters."
+            messageLabel.isHidden = false
+            retryButton.isHidden = true
         }
     }
     
@@ -140,4 +151,5 @@ enum StateViewConfiguration {
     case loading
     case error(title: String, message: String)
     case empty
+    case noResults
 }
