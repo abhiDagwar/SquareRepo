@@ -16,6 +16,17 @@ enum ViewState: Equatable {
     case failed(NetworkError)
 }
 
+// MARK: - FilterState
+
+/// All active filter criteria in one place.
+/// A struct rather than loose properties so we can pass it around and
+/// compare snapshots easily in tests.
+struct FilterState: Equatable {
+    var searchQuery: String  = ""
+    var language: String?    = nil   // nil = no language filter
+    var showArchivedOnly: Bool = false
+}
+
 // MARK: ViewModel
 @MainActor
 final class SquareRepoListViewModel {
@@ -23,6 +34,28 @@ final class SquareRepoListViewModel {
     private let perPage: Int
     private var currentPage: Int = 1
     private var hasMorePages: Bool = true
+    
+    // MARK: Data
+    /// Master list — everything fetched so far, unfiltered.
+    private var allRepositories: [Repository] = []
+
+    // MARK: Filter
+    var filterState: FilterState = FilterState() {
+        didSet {
+            guard filterState != oldValue else { return }
+            // Re-derive the filtered list and publish it.
+            publishFiltered()
+        }
+    }
+
+    /// All unique languages found in the current master list.
+    /// Used by the filter bar to populate language chip options.
+    var availableLanguages: [String] {
+        let langs = allRepositories.compactMap(\.language)
+        // Preserve insertion order (order by first appearance).
+        var seen = Set<String>()
+        return langs.filter { seen.insert($0).inserted }
+    }
     
     // MARK: Dependencies
     private let service: RepositoryServiceProtocol
@@ -63,7 +96,24 @@ final class SquareRepoListViewModel {
         await fetchPage(page: currentPage, appending: true)
     }
     
-    // MARK: Private
+    // MARK: Public API — Search & Filter
+    func updateSearch(query: String) {
+        filterState.searchQuery = query
+    }
+
+    func updateLanguageFilter(_ language: String?) {
+        filterState.language = language
+    }
+
+    func toggleArchivedFilter() {
+        filterState.showArchivedOnly.toggle()
+    }
+
+    func clearAllFilters() {
+        filterState = FilterState()
+    }
+    
+    // MARK: Private — Fetching
     private func fetchPage(page: Int, appending: Bool) async {
         do {
             let fetched = try await service.fetchRepositories(page: page, perPage: perPage)
@@ -90,5 +140,30 @@ final class SquareRepoListViewModel {
         } catch {
             state = .failed(.underlying(error.localizedDescription))
         }
+    }
+    
+    // MARK: Private — Filtering
+    /// Derives the visible list from `allRepositories` + `filterState`
+    /// and pushes it to the VC via `state`.
+    private func publishFiltered() {
+        let result = allRepositories.filter { repo in
+            // 1. Archived filter
+            if filterState.showArchivedOnly, !repo.isArchived { return false }
+
+            // 2. Language filter
+            if let lang = filterState.language, repo.language != lang { return false }
+
+            // 3. Search query — match name or description, case-insensitive
+            let query = filterState.searchQuery.trimmingCharacters(in: .whitespaces)
+            if !query.isEmpty {
+                let nameMatch = repo.name.localizedCaseInsensitiveContains(query)
+                let descMatch = repo.description?.localizedCaseInsensitiveContains(query) ?? false
+                if !nameMatch && !descMatch { return false }
+            }
+
+            return true
+        }
+
+        state = .loaded(result)
     }
 }
