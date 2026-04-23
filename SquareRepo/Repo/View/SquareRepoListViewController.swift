@@ -7,9 +7,6 @@
 
 import UIKit
 
-
-nonisolated enum Section: Hashable { case main }
-
 @MainActor
 final class SquareRepoListViewController: UIViewController {
     // MARK: Dependencies
@@ -20,7 +17,11 @@ final class SquareRepoListViewController: UIViewController {
         let tv = UITableView(frame: .zero, style: .plain)
         tv.register(SquareRepoCell.self, forCellReuseIdentifier: SquareRepoCell.reuseIdentifier)
         tv.separatorInset = UIEdgeInsets(top: 0, left: 16, bottom: 0, right: 0)
-        tv.rowHeight = 100
+        tv.rowHeight = UITableView.automaticDimension
+        // A better estimate reduces the number of layout passes on first load.
+        // 100 was too small for repos with long descriptions; 110 is closer to
+        // the average once avatar + 2–3 lines of description are factored in.
+        tv.estimatedRowHeight = 110
         tv.delegate = self
         tv.translatesAutoresizingMaskIntoConstraints = false
         return tv
@@ -45,9 +46,9 @@ final class SquareRepoListViewController: UIViewController {
         return ai
     }()
     
+    private nonisolated enum Section: Hashable { case main }
+    
     // MARK: Diffable data source
-    // private enum Section: Hashable, Sendable { case main }
-
     private typealias DataSource = UITableViewDiffableDataSource<Section, Repository>
     private typealias Snapshot = NSDiffableDataSourceSnapshot<Section, Repository>
     

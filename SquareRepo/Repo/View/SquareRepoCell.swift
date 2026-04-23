@@ -13,7 +13,7 @@ class SquareRepoCell: UITableViewCell {
     
     // MARK: Layout constants
     private enum Layout {
-        static let avatarSize: CGFloat    = 48
+        static let avatarSize: CGFloat    = 44
         static let avatarRadius: CGFloat  = 10
         static let horizontalPad: CGFloat = 16
         static let verticalPad: CGFloat   = 14
@@ -30,6 +30,11 @@ class SquareRepoCell: UITableViewCell {
         // SF symbol shown as placeholder while the real image loads.
         iv.image = UIImage(systemName: "square.grid.2x2.fill")
         iv.tintColor = .tertiaryLabel
+        // Fixed size — the avatar never stretches with the row height.
+        iv.setContentHuggingPriority(.required, for: .vertical)
+        iv.setContentHuggingPriority(.required, for: .horizontal)
+        iv.setContentCompressionResistancePriority(.required, for: .vertical)
+        iv.setContentCompressionResistancePriority(.required, for: .horizontal)
         iv.translatesAutoresizingMaskIntoConstraints = false
         return iv
     }()
@@ -49,7 +54,10 @@ class SquareRepoCell: UITableViewCell {
         let label = UILabel()
         label.font = .systemFont(ofSize: 14, weight: .regular)
         label.textColor = .secondaryLabel
-        label.numberOfLines = 3
+        // 0 = show the full description — no truncation at any fixed line count.
+        label.numberOfLines = 0
+        label.setContentCompressionResistancePriority(.required, for: .vertical)
+        label.setContentHuggingPriority(.defaultLow, for: .vertical)
         label.translatesAutoresizingMaskIntoConstraints = false
         return label
     }()
@@ -88,6 +96,7 @@ class SquareRepoCell: UITableViewCell {
         return stack
     }()
     
+    // The vertical stack that drives the cell's height.
     private let textStack: UIStackView = {
         let stack = UIStackView()
         stack.axis = .vertical
@@ -182,32 +191,42 @@ class SquareRepoCell: UITableViewCell {
         contentView.addSubview(textStack)
 
         NSLayoutConstraint.activate([
-            // Avatar — fixed size, vertically centred, pinned to leading edge.
+            // ── Avatar ──────────────────────────────────────────────────
+            // Fixed size.
+            avatarImageView.widthAnchor.constraint(equalToConstant: Layout.avatarSize),
+            avatarImageView.heightAnchor.constraint(equalToConstant: Layout.avatarSize),
+            // Leading + top inset.
             avatarImageView.leadingAnchor.constraint(
                 equalTo: contentView.leadingAnchor, constant: Layout.horizontalPad),
-            avatarImageView.centerYAnchor.constraint(
-                equalTo: contentView.centerYAnchor),
-            avatarImageView.widthAnchor.constraint(
-                equalToConstant: Layout.avatarSize),
-            avatarImageView.heightAnchor.constraint(
-                equalToConstant: Layout.avatarSize),
+            avatarImageView.topAnchor.constraint(
+                equalTo: contentView.topAnchor, constant: Layout.verticalPad),
 
-            // Text stack fills the remaining width.
+            // ── Text stack ──────────────────────────────────────────────
+            // Sits to the right of the avatar.
             textStack.leadingAnchor.constraint(
                 equalTo: avatarImageView.trailingAnchor, constant: Layout.avatarTextGap),
             textStack.trailingAnchor.constraint(
                 equalTo: contentView.trailingAnchor, constant: -Layout.horizontalPad),
+            // Top-aligned with the avatar so name and avatar baseline match.
             textStack.topAnchor.constraint(
                 equalTo: contentView.topAnchor, constant: Layout.verticalPad),
 
-            // >= prevents clipping when the text stack is taller than the avatar.
+            // The text stack's bottom drives the cell height.
+            // >= guarantees we never clip tall content.
             textStack.bottomAnchor.constraint(
                 greaterThanOrEqualTo: contentView.bottomAnchor,
+                constant: -Layout.verticalPad),
+
+            // The avatar must also clear the bottom inset so short-text cells
+            // still have breathing room below the avatar.
+            avatarImageView.bottomAnchor.constraint(
+                lessThanOrEqualTo: contentView.bottomAnchor,
                 constant: -Layout.verticalPad)
         ])
 
-        // Low-priority equality pulls the bottom snug when text is short,
-        // while the >= above prevents any clipping when it's tall.
+        // .defaultHigh equality snugs the bottom when text is short,
+        // but yields to the >= above when content is tall — the canonical
+        // self-sizing cell bottom constraint pattern.
         let snugBottom = textStack.bottomAnchor.constraint(
             equalTo: contentView.bottomAnchor, constant: -Layout.verticalPad)
         snugBottom.priority = .defaultHigh
