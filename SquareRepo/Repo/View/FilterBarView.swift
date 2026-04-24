@@ -9,29 +9,26 @@ import UIKit
 
 // MARK: - Delegate
 protocol FilterBarViewDelegate: AnyObject {
-    /// Called whenever the language selection or archived toggle changes.
-    func filterBar(_ bar: FilterBarView, didChangeLanguage language: String?, showArchivedOnly: Bool)
+    func filterBar(_ bar: FilterBarView, didSelect filter: ActiveFilter)
 }
 
 // MARK: - FilterBarView
 final class FilterBarView: UIView {
-
-    // MARK: Public state
+    // MARK: Public
     weak var delegate: FilterBarViewDelegate?
 
-    private(set) var selectedLanguage: String? = nil
-    private(set) var showArchivedOnly: Bool = false
-
     // MARK: Private data
-    private var languages: [String] = []
+    // Fixed chips always present at the start of the list.
+    private let fixedItems: [ActiveFilter] = [.all, .archived]
+    // Language chips appended after the fixed ones.
+    private var languageItems: [ActiveFilter] = []
 
-    // "All" is always the first chip (index 0).
-    private var allItems: [String] { ["All"] + languages }
+    private var allChips: [ActiveFilter] { fixedItems + languageItems }
 
-    // MARK: Layout
+    // MARK: Layout constants
     private enum Layout {
-        static let chipHeight: CGFloat = 32
-        static let barHeight: CGFloat  = 52
+        static let chipHeight: CGFloat    = 32
+        static let barHeight: CGFloat     = 52
         static let horizontalPad: CGFloat = 12
     }
 
@@ -41,29 +38,19 @@ final class FilterBarView: UIView {
         layout.scrollDirection = .horizontal
         layout.minimumInteritemSpacing = 8
         layout.minimumLineSpacing = 8
-        layout.sectionInset = UIEdgeInsets(top: 0, left: Layout.horizontalPad, bottom: 0, right: 8)
+        layout.sectionInset = UIEdgeInsets(
+            top: 0, left: Layout.horizontalPad, bottom: 0, right: Layout.horizontalPad)
         let cv = UICollectionView(frame: .zero, collectionViewLayout: layout)
         cv.backgroundColor = .clear
         cv.showsHorizontalScrollIndicator = false
+        // Allow only one chip selected at a time.
+        cv.allowsSelection = true
+        cv.allowsMultipleSelection = false
         cv.register(ChipCell.self, forCellWithReuseIdentifier: ChipCell.reuseIdentifier)
         cv.dataSource = self
         cv.delegate = self
         cv.translatesAutoresizingMaskIntoConstraints = false
         return cv
-    }()
-
-    private lazy var archivedButton: UIButton = {
-        var config = UIButton.Configuration.tinted()
-        config.title = "Archived"
-        config.image = UIImage(systemName: "archivebox")
-        config.imagePadding = 4
-        config.cornerStyle = .capsule
-        config.baseForegroundColor = .systemOrange
-        config.baseBackgroundColor = .systemOrange
-        let btn = UIButton(configuration: config)
-        btn.translatesAutoresizingMaskIntoConstraints = false
-        btn.addTarget(self, action: #selector(archivedTapped), for: .touchUpInside)
-        return btn
     }()
 
     private let separator: UIView = {
@@ -84,35 +71,48 @@ final class FilterBarView: UIView {
     }
 
     // MARK: Public API
-    /// Replace the available language list and reset selection.
+    /// Update the available language chips without resetting the active selection.
+    /// Called whenever the ViewModel exposes new languages (e.g. after pagination).
     func setLanguages(_ langs: [String]) {
-        guard langs != languages else { return }
-        languages = langs
-        selectedLanguage = nil
+        let newItems = langs.map { ActiveFilter.language($0) }
+        guard newItems != languageItems else { return }
+        languageItems = newItems
+
         collectionView.reloadData()
-        // Select "All" chip
-        collectionView.selectItem(
-            at: IndexPath(item: 0, section: 0),
-            animated: false,
-            scrollPosition: []
-        )
+        // Re-apply selection so the correct chip stays highlighted after reload.
+        applyFilter(.all, notify: false)
+    }
+
+    /// Push a filter selection into the bar from outside (e.g. when the VC
+    /// clears all filters on search cancel). Pass `notify: false` to avoid
+    /// firing the delegate callback — this is an external state push, not a
+    /// user tap.
+    func applyFilter(_ filter: ActiveFilter, notify: Bool = false) {
+        guard let index = allChips.firstIndex(of: filter) else {
+            // Fallback to "All" if the filter doesn't exist in current chips.
+            applyFilter(.all, notify: notify)
+            return
+        }
+        let indexPath = IndexPath(item: index, section: 0)
+        collectionView.selectItem(at: indexPath, animated: true, scrollPosition: .centeredHorizontally)
+        if notify { delegate?.filterBar(self, didSelect: filter) }
+    }
+
+    // MARK: Intrinsic size
+    override var intrinsicContentSize: CGSize {
+        CGSize(width: UIView.noIntrinsicMetric, height: Layout.barHeight)
     }
 
     // MARK: Layout
     private func setupLayout() {
         backgroundColor = .systemBackground
         addSubview(collectionView)
-        addSubview(archivedButton)
         addSubview(separator)
 
         NSLayoutConstraint.activate([
-            archivedButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Layout.horizontalPad),
-            archivedButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            archivedButton.heightAnchor.constraint(equalToConstant: Layout.chipHeight),
-
-            collectionView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            collectionView.trailingAnchor.constraint(equalTo: archivedButton.leadingAnchor, constant: -8),
             collectionView.topAnchor.constraint(equalTo: topAnchor),
+            collectionView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            collectionView.trailingAnchor.constraint(equalTo: trailingAnchor),
             collectionView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
             separator.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -122,50 +122,39 @@ final class FilterBarView: UIView {
         ])
     }
 
-    override var intrinsicContentSize: CGSize {
-        CGSize(width: UIView.noIntrinsicMetric, height: Layout.barHeight)
+    // MARK: Chip label helper
+    private func label(for filter: ActiveFilter) -> String {
+        switch filter {
+        case .all:              return "All"
+        case .archived:         return "⬜ Archived"
+        case .language(let l):  return l
+        }
     }
 
-    // MARK: Actions
-    @objc private func archivedTapped() {
-        showArchivedOnly.toggle()
-        updateArchivedButtonAppearance()
-        notifyDelegate()
-    }
-
-    private func updateArchivedButtonAppearance() {
-        var config = archivedButton.configuration
-        config?.baseForegroundColor = showArchivedOnly ? .white : .systemOrange
-        config?.baseBackgroundColor = showArchivedOnly ? .systemOrange : .systemOrange
-        config?.background.backgroundColor = showArchivedOnly
-            ? UIColor.systemOrange
-            : UIColor.systemOrange.withAlphaComponent(0.12)
-        archivedButton.configuration = config
-    }
-
-    private func notifyDelegate() {
-        delegate?.filterBar(self, didChangeLanguage: selectedLanguage, showArchivedOnly: showArchivedOnly)
+    // MARK: Chip color helper
+    private func color(for filter: ActiveFilter) -> UIColor {
+        switch filter {
+        case .all:       return .systemBlue
+        case .archived:  return .systemOrange
+        case .language:  return .systemGreen
+        }
     }
 }
 
 // MARK: - UICollectionViewDataSource
 extension FilterBarView: UICollectionViewDataSource {
 
-    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        allItems.count
+    func collectionView(_ cv: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+        allChips.count
     }
 
-    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-        guard let cell = collectionView.dequeueReusableCell(
+    func collectionView(_ cv: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        guard let cell = cv.dequeueReusableCell(
             withReuseIdentifier: ChipCell.reuseIdentifier, for: indexPath
         ) as? ChipCell else { fatalError("ChipCell not registered") }
 
-        let title = allItems[indexPath.item]
-        cell.configure(title: title)
-        // "All" starts selected
-        if indexPath.item == 0 && selectedLanguage == nil {
-            collectionView.selectItem(at: indexPath, animated: false, scrollPosition: [])
-        }
+        let filter = allChips[indexPath.item]
+        cell.configure(title: label(for: filter), accentColor: color(for: filter))
         return cell
     }
 }
@@ -173,10 +162,24 @@ extension FilterBarView: UICollectionViewDataSource {
 // MARK: - UICollectionViewDelegate
 extension FilterBarView: UICollectionViewDelegate {
 
-    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        // "All" chip deselects the language filter
-        selectedLanguage = indexPath.item == 0 ? nil : allItems[indexPath.item]
-        notifyDelegate()
+    func collectionView(_ cv: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        let tapped = allChips[indexPath.item]
+
+        // Check if this chip was already selected — if so, deselect back to "All"
+        // (toggle behaviour). UICollectionView won't fire didSelect again for an
+        // already-selected cell, so we detect this via the ViewModel's current
+        // filter state via the delegate callback path.
+        //
+        // We always notify on a tap — the ViewModel handles the toggle logic via
+        // `selectFilter(_:)` which returns `.all` if the same filter is re-selected.
+        delegate?.filterBar(self, didSelect: tapped)
+    }
+
+    // Prevent deselecting the currently selected chip by tapping it again —
+    // the ViewModel will handle toggling back to `.all` and the VC will call
+    // `applyFilter(.all)` to visually reset.
+    func collectionView(_ cv: UICollectionView, shouldDeselectItemAt indexPath: IndexPath) -> Bool {
+        false
     }
 }
 
@@ -184,16 +187,15 @@ extension FilterBarView: UICollectionViewDelegate {
 extension FilterBarView: UICollectionViewDelegateFlowLayout {
 
     func collectionView(
-        _ collectionView: UICollectionView,
-        layout collectionViewLayout: UICollectionViewLayout,
+        _ cv: UICollectionView,
+        layout: UICollectionViewLayout,
         sizeForItemAt indexPath: IndexPath
     ) -> CGSize {
-        // Size chips to their text content + horizontal padding.
-        let title = allItems[indexPath.item]
-        let width = (title as NSString).size(withAttributes: [
+        let title = label(for: allChips[indexPath.item])
+        let textWidth = (title as NSString).size(withAttributes: [
             .font: UIFont.systemFont(ofSize: 13, weight: .medium)
-        ]).width + 24
-        return CGSize(width: width, height: Layout.chipHeight)
+        ]).width
+        return CGSize(width: textWidth + 24, height: Layout.chipHeight)
     }
 }
 
@@ -210,6 +212,8 @@ private final class ChipCell: UICollectionViewCell {
         return l
     }()
 
+    private var accentColor: UIColor = .systemBlue
+
     override var isSelected: Bool {
         didSet { updateAppearance() }
     }
@@ -225,23 +229,23 @@ private final class ChipCell: UICollectionViewCell {
         ])
         contentView.layer.cornerRadius = 16
         contentView.layer.masksToBounds = true
-        updateAppearance()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(title: String) {
+    func configure(title: String, accentColor: UIColor) {
+        self.accentColor = accentColor
         titleLabel.text = title
         updateAppearance()
     }
 
     private func updateAppearance() {
         if isSelected {
-            contentView.backgroundColor = .systemBlue
+            contentView.backgroundColor = accentColor
             titleLabel.textColor = .white
         } else {
-            contentView.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.1)
-            titleLabel.textColor = .systemBlue
+            contentView.backgroundColor = accentColor.withAlphaComponent(0.1)
+            titleLabel.textColor = accentColor
         }
     }
 }

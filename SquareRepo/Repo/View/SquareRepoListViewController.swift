@@ -12,6 +12,25 @@ final class SquareRepoListViewController: UIViewController {
     // MARK: Dependencies
     private let viewModel: SquareRepoListViewModel
     
+    // MARK: Search
+    private lazy var searchController: UISearchController = {
+        let sc = UISearchController(searchResultsController: nil)
+        sc.searchResultsUpdater = self
+        sc.searchBar.delegate = self
+        sc.obscuresBackgroundDuringPresentation = false
+        sc.searchBar.placeholder = "Search repositories…"
+        sc.searchBar.autocapitalizationType = .none
+        return sc
+    }()
+
+    // MARK: Filter bar (pinned, always visible)
+    private lazy var filterBar: FilterBarView = {
+        let bar = FilterBarView()
+        bar.delegate = self
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        return bar
+    }()
+    
     // MARK: Subviews
     private lazy var tableView: UITableView = {
         let tv = UITableView(frame: .zero, style: .plain)
@@ -86,8 +105,15 @@ final class SquareRepoListViewController: UIViewController {
         setupNavigationBar()
         setupLayout()
         bindViewModel()
-
+        // Select the "All" chip on first load.
+        filterBar.applyFilter(.all, notify: false)
         Task { await viewModel.loadRepositories() }
+    }
+    
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // Ensure the filter bar header is correctly sized after layout.
+        sizeFilterBarHeader()
     }
     
     // MARK: Setup
@@ -95,27 +121,61 @@ final class SquareRepoListViewController: UIViewController {
         title = "Square Repositories"
         navigationController?.navigationBar.prefersLargeTitles = true
         navigationItem.largeTitleDisplayMode = .always
+        navigationItem.searchController = searchController
+        // Keep search bar visible when scrolled — it's always accessible.
+        navigationItem.hidesSearchBarWhenScrolling = false
+        definesPresentationContext = true
+        //navigationController?.delegate = self
+    }
+    
+    private func setupFilterBar() {
+        // The filter bar lives in the tableHeaderView — it scrolls with the
+        // list and reappears when the user pulls down, just like the search bar.
+        let wrapper = UIView()
+        wrapper.addSubview(filterBar)
+        filterBar.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            filterBar.topAnchor.constraint(equalTo: wrapper.topAnchor),
+            filterBar.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
+            filterBar.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
+            filterBar.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor)
+        ])
+        tableView.tableHeaderView = wrapper
+    }
+
+    private func sizeFilterBarHeader() {
+        guard let header = tableView.tableHeaderView else { return }
+        let targetHeight = filterBar.intrinsicContentSize.height
+        guard header.frame.height != targetHeight else { return }
+        header.frame.size.height = targetHeight
+        tableView.tableHeaderView = header  // reassign forces layout
     }
     
     private func setupLayout() {
         view.backgroundColor = .systemBackground
+
+        view.addSubview(filterBar)
         view.addSubview(tableView)
         view.addSubview(stateView)
 
-        // Pull-to-refresh
+        // Pull-to-refresh — attached to table, disabled during search.
         refreshControl.addTarget(self, action: #selector(handleRefresh), for: .valueChanged)
         tableView.refreshControl = refreshControl
 
-        // Pagination footer — hidden until we're in loadingMore state
-        tableView.tableFooterView = footerSpinner
-
         NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            // Filter bar pinned just below the navigation bar.
+            filterBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            filterBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            filterBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+
+            // Table fills the space below the filter bar.
+            tableView.topAnchor.constraint(equalTo: filterBar.bottomAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            stateView.topAnchor.constraint(equalTo: view.topAnchor),
+            // State view fills the same space as the table (below the filter bar).
+            stateView.topAnchor.constraint(equalTo: filterBar.bottomAnchor),
             stateView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             stateView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             stateView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
@@ -135,56 +195,75 @@ final class SquareRepoListViewController: UIViewController {
             break
 
         case .loading:
-            stateView.isHidden = false
-            stateView.configure(for: .loading)
-            tableView.isHidden = true
+            showStateView(.loading)
 
         case .loaded(let repos):
             refreshControl.endRefreshing()
             footerSpinner.stopAnimating()
+            // Update language chips. applyFilter keeps the current selection.
+            filterBar.setLanguages(viewModel.availableLanguages)
+            // Sync the chip UI with the ViewModel's actual active filter.
+            filterBar.applyFilter(viewModel.filterState.activeFilter, notify: false)
 
             if repos.isEmpty {
-                stateView.isHidden = false
-                stateView.configure(for: .empty)
-                tableView.isHidden = true
+                showStateView(viewModel.filterState.isActive ? .noResults : .empty)
             } else {
-                stateView.isHidden = true
-                tableView.isHidden = false
-                apply(repos: repos, animated: true)
+                showTable(repos: repos)
             }
 
         case .loadingMore(let repos):
-            // Keep showing the existing list while appending.
-            apply(repos: repos, animated: false)
+            showTable(repos: repos)
             footerSpinner.startAnimating()
 
         case .failed(let error):
             refreshControl.endRefreshing()
             footerSpinner.stopAnimating()
-            stateView.isHidden = false
-            stateView.configure(for: .error(
+            showStateView(.error(
                 title: "Something went wrong",
                 message: error.errorDescription ?? "Unknown error"
             ))
-            tableView.isHidden = true
         }
     }
 
-    private func apply(repos: [Repository], animated: Bool) {
-        var snapshot = Snapshot()
-        snapshot.appendSections([Section.main])
-        snapshot.appendItems(repos, toSection: Section.main)
-        dataSource.apply(snapshot, animatingDifferences: animated)
+    // MARK: Render helpers
+    private func showTable(repos: [Repository]) {
+        tableView.isHidden = false
+        stateView.isHidden = true
+        applySnapshot(repos: repos)
     }
-    
-    // MARK: Actions
+
+    private func showStateView(_ config: StateViewConfiguration) {
+        tableView.isHidden = true
+        stateView.isHidden = false
+        stateView.configure(for: config)
+    }
+
+    private func applySnapshot(repos: [Repository]) {
+        var snapshot = Snapshot()
+        snapshot.appendSections([.main])
+        snapshot.appendItems(repos, toSection: .main)
+        dataSource.apply(snapshot, animatingDifferences: true)
+    }
+
+    // MARK: Refresh
+    /// Only available when search is not active.
+    /// Enabled/disabled by searchControllerDelegate methods below.
     @objc private func handleRefresh() {
         Task { await viewModel.loadRepositories() }
+    }
+
+    private func setRefreshEnabled(_ enabled: Bool) {
+        if enabled {
+            tableView.refreshControl = refreshControl
+        } else {
+            // Dismiss any in-progress refresh first so it doesn't hang.
+            refreshControl.endRefreshing()
+            tableView.refreshControl = nil
+        }
     }
 }
 
 // MARK: - UITableViewDelegate
-
 extension SquareRepoListViewController: UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
@@ -203,3 +282,38 @@ extension SquareRepoListViewController: UITableViewDelegate {
     }
 }
 
+// MARK: - UISearchResultsUpdating
+extension SquareRepoListViewController: UISearchResultsUpdating {
+
+    func updateSearchResults(for sc: UISearchController) {
+        viewModel.updateSearch(query: sc.searchBar.text ?? "")
+    }
+}
+
+// MARK: - UISearchBarDelegate
+extension SquareRepoListViewController: UISearchBarDelegate {
+
+    func searchBarTextDidBeginEditing(_ searchBar: UISearchBar) {
+        // Disable pull-to-refresh while the keyboard / search is active.
+        setRefreshEnabled(false)
+    }
+
+    func searchBarCancelButtonClicked(_ searchBar: UISearchBar) {
+        // Cancel clears the search query but preserves the active chip filter.
+        viewModel.clearSearch()
+        // Re-enable pull-to-refresh once search is dismissed.
+        setRefreshEnabled(true)
+    }
+}
+
+// MARK: - FilterBarViewDelegate
+extension SquareRepoListViewController: FilterBarViewDelegate {
+
+    func filterBar(_ bar: FilterBarView, didSelect filter: ActiveFilter) {
+        // The ViewModel's selectFilter toggles back to .all if the same
+        // filter is tapped again, then publishFiltered() re-derives the list.
+        viewModel.selectFilter(filter)
+        // Sync the chip UI back — in case the ViewModel toggled to .all.
+        filterBar.applyFilter(viewModel.filterState.activeFilter, notify: false)
+    }
+}
